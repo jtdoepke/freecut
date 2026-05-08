@@ -2,6 +2,11 @@
 //!
 //! The optimizer may use known heuristics internally, but it should return Freecut-owned solution
 //! data rather than leaking an external library's result shape into the rest of the application.
+//!
+//! All dimensional values consumed and produced here are `u32` integers in milli-units of the
+//! project's unit (see [`crate::dim`]). Internal arithmetic is exact integer; equality on rect
+//! coordinates is load-bearing for adjacent-rect merging and waste compaction. Do not introduce
+//! floating-point dimensions.
 
 use crate::{
     domain::{CutSettings, LayoutKind, PatternDirection, PieceId, Project},

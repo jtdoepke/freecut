@@ -1,6 +1,11 @@
 //! Core project model for Freecut.
 //!
 //! This layer should stay independent from GUI toolkit, PDF backend, and concrete optimizer.
+//!
+//! Dimension fields (`width`, `length`, `kerf_width`, `LinearKerf::extra`/`reference`) are
+//! stored as `u32` integers in **milli-units** of `CutSettings::unit` (1 user unit =
+//! `dim::MILLI_PER_UNIT`). User-facing surfaces convert via the helpers in
+//! [`crate::dim`].
 
 use serde::{Deserialize, Serialize};
 

@@ -1,3 +1,4 @@
+pub mod dim;
 pub mod domain;
 pub mod export;
 pub mod import;

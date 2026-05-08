@@ -5,7 +5,10 @@
 
 use std::{collections::HashMap, fs, io, path::Path};
 
-use crate::domain::{CutPiece, PatternDirection, PieceId, StockPiece};
+use crate::{
+    dim,
+    domain::{CutPiece, PatternDirection, PieceId, StockPiece},
+};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CsvImportResult {
@@ -195,9 +198,9 @@ fn csv_piece_from_record(
 ) -> Result<CsvPiece, CsvImportError> {
     let piece_type = parse_piece_type(optional_cell(record, header.piece_type).unwrap_or_default())
         .map_err(|message| CsvImportError { line, message })?;
-    let width = parse_positive_u32(cell(record, header.width, line)?, "width")
+    let width = parse_positive_dimension(cell(record, header.width, line)?, "width")
         .map_err(|message| CsvImportError { line, message })?;
-    let length = parse_positive_u32(cell(record, header.length, line)?, "length")
+    let length = parse_positive_dimension(cell(record, header.length, line)?, "length")
         .map_err(|message| CsvImportError { line, message })?;
     let quantity = parse_positive_u32(cell(record, header.quantity, line)?, "quantity")
         .map_err(|message| CsvImportError { line, message })?;
@@ -271,6 +274,10 @@ fn parse_positive_u32(value: &str, field: &str) -> Result<u32, String> {
     }
 
     Ok(parsed)
+}
+
+fn parse_positive_dimension(value: &str, field: &str) -> Result<u32, String> {
+    dim::parse_dimension(value).map_err(|message| format!("{field} {message}"))
 }
 
 fn parse_piece_type(value: &str) -> Result<CsvPieceType, String> {
@@ -410,8 +417,8 @@ shelf,600,300,4,none,true\n";
         assert_eq!(result.cut_pieces.len(), 2);
         assert_eq!(result.cut_pieces[0].id, PieceId(10));
         assert_eq!(result.cut_pieces[0].label, "side");
-        assert_eq!(result.cut_pieces[0].width, 700);
-        assert_eq!(result.cut_pieces[0].length, 500);
+        assert_eq!(result.cut_pieces[0].width, 700_000);
+        assert_eq!(result.cut_pieces[0].length, 500_000);
         assert_eq!(result.cut_pieces[0].quantity, 2);
         assert_eq!(
             result.cut_pieces[0].pattern,
@@ -454,6 +461,21 @@ valid2,30,40,2\n";
         assert_eq!(result.errors.len(), 1);
         assert_eq!(result.errors[0].line, 3);
         assert_eq!(result.errors[0].message, "width muss größer als 0 sein");
+    }
+
+    #[test]
+    fn parses_decimal_and_fraction_dimensions() {
+        let source = "label,width,length,quantity\n\
+side,100.5,1/2,3\n\
+shelf,3 1/4,12.5,1\n";
+
+        let result = import_project_csv(source, 1);
+
+        assert_eq!(result.errors, Vec::new());
+        assert_eq!(result.cut_pieces[0].width, 100_500);
+        assert_eq!(result.cut_pieces[0].length, 500);
+        assert_eq!(result.cut_pieces[1].width, 3_250);
+        assert_eq!(result.cut_pieces[1].length, 12_500);
     }
 
     #[test]

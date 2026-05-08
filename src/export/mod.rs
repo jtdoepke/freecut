@@ -5,6 +5,7 @@
 
 use std::{fmt, fmt::Write as _, fs, io, path::Path};
 
+use crate::dim;
 use crate::domain::{LayoutKind, Unit};
 use crate::render::{
     solution_sheet_kerf_geometries, CutKerfGeometry, CutKerfLine, PlacedPiece, Rect, Solution,
@@ -210,16 +211,16 @@ fn sheet_layout_page_content(
     let subtitle = match fitness {
         Some(fitness) => format!(
             "Size {} x {} {} - {} cut(s) - fitness {:.3}",
-            sheet.width,
-            sheet.length,
+            dim::format_dimension(sheet.width),
+            dim::format_dimension(sheet.length),
             unit_label(unit),
             sheet.placed_pieces.len(),
             fitness
         ),
         None => format!(
             "Size {} x {} {} - {} cut(s)",
-            sheet.width,
-            sheet.length,
+            dim::format_dimension(sheet.width),
+            dim::format_dimension(sheet.length),
             unit_label(unit),
             sheet.placed_pieces.len()
         ),
@@ -471,10 +472,10 @@ fn add_cut_list_table_row(content: &mut String, row_top_y: f64, piece: &PlacedPi
 
     let values = [
         piece_label(piece),
-        piece.rect.x.to_string(),
-        piece.rect.y.to_string(),
-        piece.rect.width.to_string(),
-        piece.rect.length.to_string(),
+        dim::format_dimension(piece.rect.x),
+        dim::format_dimension(piece.rect.y),
+        dim::format_dimension(piece.rect.width),
+        dim::format_dimension(piece.rect.length),
         if piece.rotated { "rotated" } else { "fixed" }.to_string(),
         pattern_label(piece.pattern).to_string(),
     ];
@@ -812,8 +813,8 @@ mod tests {
         let mut solution = sample_solution();
         solution.sheets.push(SolutionSheet {
             stock_id: PieceId(2),
-            width: 50,
-            length: 50,
+            width: 50_000,
+            length: 50_000,
             placed_pieces: Vec::new(),
             waste: Vec::new(),
             cutting_guide: None,
@@ -988,27 +989,27 @@ mod tests {
             layout: LayoutKind::Guillotine,
             sheets: vec![SolutionSheet {
                 stock_id: PieceId(1),
-                width: 100,
-                length: 80,
+                width: 100_000,
+                length: 80_000,
                 placed_pieces: (0..piece_count)
                     .map(|index| PlacedPiece {
                         cut_id: PieceId(7),
                         instance: index as u32,
                         rect: Rect {
-                            x: 10,
-                            y: 20,
-                            width: 30,
-                            length: 40,
+                            x: 10_000,
+                            y: 20_000,
+                            width: 30_000,
+                            length: 40_000,
                         },
                         pattern: PatternDirection::None,
                         rotated: false,
                     })
                     .collect(),
                 waste: vec![Rect {
-                    x: 40,
+                    x: 40_000,
                     y: 0,
-                    width: 60,
-                    length: 80,
+                    width: 60_000,
+                    length: 80_000,
                 }],
                 cutting_guide: None,
             }],
@@ -1021,12 +1022,12 @@ mod tests {
             Rect {
                 x: 0,
                 y: 0,
-                width: 100,
-                length: 80,
+                width: 100_000,
+                length: 80_000,
             },
             CutOrientation::Vertical,
-            40,
-            2,
+            40_000,
+            2_000,
         )
         .expect("valid cut");
 
@@ -1034,14 +1035,14 @@ mod tests {
             layout: LayoutKind::Guillotine,
             sheets: vec![SolutionSheet {
                 stock_id: PieceId(1),
-                width: 100,
-                length: 80,
-                placed_pieces: vec![placed_piece(PieceId(7), 0, 0, 0, 40, 80)],
+                width: 100_000,
+                length: 80_000,
+                placed_pieces: vec![placed_piece(PieceId(7), 0, 0, 0, 40_000, 80_000)],
                 waste: vec![Rect {
-                    x: 42,
+                    x: 42_000,
                     y: 0,
-                    width: 58,
-                    length: 80,
+                    width: 58_000,
+                    length: 80_000,
                 }],
                 cutting_guide: Some(SliceNode::cut(
                     cut,
@@ -1049,8 +1050,8 @@ mod tests {
                         Rect {
                             x: 0,
                             y: 0,
-                            width: 40,
-                            length: 80,
+                            width: 40_000,
+                            length: 80_000,
                         },
                         LeafKind::CutPiece {
                             cut_id: PieceId(7),
@@ -1059,10 +1060,10 @@ mod tests {
                     ),
                     SliceNode::leaf(
                         Rect {
-                            x: 42,
+                            x: 42_000,
                             y: 0,
-                            width: 58,
-                            length: 80,
+                            width: 58_000,
+                            length: 80_000,
                         },
                         LeafKind::Waste,
                     ),
@@ -1077,11 +1078,11 @@ mod tests {
             Rect {
                 x: 0,
                 y: 0,
-                width: 100,
-                length: 80,
+                width: 100_000,
+                length: 80_000,
             },
             CutOrientation::Horizontal,
-            40,
+            40_000,
             0,
         )
         .expect("valid zero-kerf cut");
@@ -1090,14 +1091,14 @@ mod tests {
             layout: LayoutKind::Guillotine,
             sheets: vec![SolutionSheet {
                 stock_id: PieceId(1),
-                width: 100,
-                length: 80,
-                placed_pieces: vec![placed_piece(PieceId(7), 0, 0, 0, 100, 40)],
+                width: 100_000,
+                length: 80_000,
+                placed_pieces: vec![placed_piece(PieceId(7), 0, 0, 0, 100_000, 40_000)],
                 waste: vec![Rect {
                     x: 0,
-                    y: 40,
-                    width: 100,
-                    length: 40,
+                    y: 40_000,
+                    width: 100_000,
+                    length: 40_000,
                 }],
                 cutting_guide: Some(SliceNode::cut(
                     cut,
@@ -1105,8 +1106,8 @@ mod tests {
                         Rect {
                             x: 0,
                             y: 0,
-                            width: 100,
-                            length: 40,
+                            width: 100_000,
+                            length: 40_000,
                         },
                         LeafKind::CutPiece {
                             cut_id: PieceId(7),
@@ -1116,9 +1117,9 @@ mod tests {
                     SliceNode::leaf(
                         Rect {
                             x: 0,
-                            y: 40,
-                            width: 100,
-                            length: 40,
+                            y: 40_000,
+                            width: 100_000,
+                            length: 40_000,
                         },
                         LeafKind::Waste,
                     ),
@@ -1133,11 +1134,11 @@ mod tests {
             layout: LayoutKind::Nested,
             sheets: vec![SolutionSheet {
                 stock_id: PieceId(1),
-                width: 10,
-                length: 6,
+                width: 10_000,
+                length: 6_000,
                 placed_pieces: vec![
-                    placed_piece(PieceId(7), 0, 0, 0, 4, 6),
-                    placed_piece(PieceId(8), 0, 6, 0, 4, 6),
+                    placed_piece(PieceId(7), 0, 0, 0, 4_000, 6_000),
+                    placed_piece(PieceId(8), 0, 6_000, 0, 4_000, 6_000),
                 ],
                 waste: Vec::new(),
                 cutting_guide: None,

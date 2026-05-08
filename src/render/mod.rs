@@ -1,6 +1,11 @@
 //! Shared solution/render model.
 //!
 //! GUI preview, PDF export, and later SVG/PNG export should consume this representation.
+//!
+//! Coordinates and sizes are `u32` integers in milli-units of the project's unit (see
+//! [`crate::dim`]). All arithmetic in this module is integer; the optimizer relies on
+//! exact equality of these values (rect merging, waste-edge detection), so do not
+//! introduce floating-point intermediates.
 
 use crate::domain::{LayoutKind, PatternDirection, PieceId};
 

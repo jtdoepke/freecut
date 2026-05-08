@@ -7,14 +7,22 @@ use freecut::{
     render::{Cut, Rect, SliceNode, Solution},
 };
 
+/// Scale a user-unit dimension to internal milli-units.
+/// Domain/optimizer/render store dimensions as `u32` in 1/1000 of the project's unit
+/// (see `freecut::dim`); these regression fixtures express user-friendly values and
+/// scale them once.
+const fn mm(value: u32) -> u32 {
+    value * freecut::dim::MILLI_PER_UNIT
+}
+
 #[test]
 fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
     let project = Project {
         name: "repro".to_string(),
         stock_pieces: vec![StockPiece {
             id: PieceId(1),
-            width: 2440,
-            length: 1220,
+            width: mm(2440),
+            length: mm(1220),
             quantity: Some(1),
             pattern: PatternDirection::None,
         }],
@@ -22,8 +30,8 @@ fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
             CutPiece {
                 id: PieceId(2),
                 label: "cut-2".to_string(),
-                width: 800,
-                length: 100,
+                width: mm(800),
+                length: mm(100),
                 quantity: 15,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -31,8 +39,8 @@ fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
             CutPiece {
                 id: PieceId(3),
                 label: "cut-3".to_string(),
-                width: 100,
-                length: 78,
+                width: mm(100),
+                length: mm(78),
                 quantity: 44,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -40,8 +48,8 @@ fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
             CutPiece {
                 id: PieceId(4),
                 label: "cut-4".to_string(),
-                width: 200,
-                length: 60,
+                width: mm(200),
+                length: mm(60),
                 quantity: 10,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -49,8 +57,8 @@ fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
             CutPiece {
                 id: PieceId(5),
                 label: "cut-5".to_string(),
-                width: 150,
-                length: 150,
+                width: mm(150),
+                length: mm(150),
                 quantity: 35,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -78,8 +86,8 @@ fn thorough_guillotine_places_q71_side_strip_case() {
         name: "side-strip-repro".to_string(),
         stock_pieces: vec![StockPiece {
             id: PieceId(2),
-            width: 2440,
-            length: 1220,
+            width: mm(2440),
+            length: mm(1220),
             quantity: Some(1),
             pattern: PatternDirection::None,
         }],
@@ -87,8 +95,8 @@ fn thorough_guillotine_places_q71_side_strip_case() {
             CutPiece {
                 id: PieceId(1),
                 label: "cut-1".to_string(),
-                width: 100,
-                length: 100,
+                width: mm(100),
+                length: mm(100),
                 quantity: 85,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -96,8 +104,8 @@ fn thorough_guillotine_places_q71_side_strip_case() {
             CutPiece {
                 id: PieceId(3),
                 label: "cut-3".to_string(),
-                width: 234,
-                length: 344,
+                width: mm(234),
+                length: mm(344),
                 quantity: 21,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -105,8 +113,8 @@ fn thorough_guillotine_places_q71_side_strip_case() {
             CutPiece {
                 id: PieceId(4),
                 label: "cut-4".to_string(),
-                width: 40,
-                length: 120,
+                width: mm(40),
+                length: mm(120),
                 quantity: 71,
                 pattern: PatternDirection::None,
                 can_rotate: true,
@@ -114,7 +122,7 @@ fn thorough_guillotine_places_q71_side_strip_case() {
         ],
         settings: CutSettings {
             unit: Unit::Millimeter,
-            kerf_width: 1,
+            kerf_width: mm(1),
             linear_kerf: None,
             layout: LayoutKind::Guillotine,
         },
@@ -155,13 +163,13 @@ fn thorough_guillotine_places_q71_side_strip_case() {
 #[test]
 fn nested_places_small_non_guillotine_advantage_case() {
     let nested = nested_project(
-        10,
-        10,
+        mm(10),
+        mm(10),
         vec![
-            cut(10, 2, 2, 1, false),
-            cut(20, 2, 3, 1, false),
-            cut(30, 2, 6, 1, false),
-            cut(40, 7, 8, 1, false),
+            cut(10, mm(2), mm(2), 1, false),
+            cut(20, mm(2), mm(3), 1, false),
+            cut(30, mm(2), mm(6), 1, false),
+            cut(40, mm(7), mm(8), 1, false),
         ],
     );
     let mut guillotine = nested.clone();
@@ -183,9 +191,12 @@ fn nested_places_small_non_guillotine_advantage_case() {
 #[test]
 fn nested_rotates_narrow_piece_into_remaining_strip() {
     let project = nested_project(
-        100,
-        60,
-        vec![cut(10, 60, 60, 1, false), cut(20, 50, 40, 1, true)],
+        mm(100),
+        mm(60),
+        vec![
+            cut(10, mm(60), mm(60), 1, false),
+            cut(20, mm(50), mm(40), 1, true),
+        ],
     );
 
     let solution = BaselineOptimizer
@@ -207,12 +218,12 @@ fn nested_uses_pattern_wildcard_like_guillotine() {
         name: "nested-pattern-wildcard".to_string(),
         stock_pieces: vec![StockPiece {
             id: PieceId(1),
-            width: 100,
-            length: 100,
+            width: mm(100),
+            length: mm(100),
             quantity: Some(1),
             pattern: PatternDirection::ParallelToWidth,
         }],
-        cut_pieces: vec![cut(10, 50, 50, 1, false)],
+        cut_pieces: vec![cut(10, mm(50), mm(50), 1, false)],
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 0,
@@ -235,7 +246,7 @@ fn nested_uses_pattern_wildcard_like_guillotine() {
 
 #[test]
 fn nested_respects_finite_stock_quantity() {
-    let project = nested_project(100, 100, vec![cut(10, 60, 100, 2, false)]);
+    let project = nested_project(mm(100), mm(100), vec![cut(10, mm(60), mm(100), 2, false)]);
 
     let error = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Thorough))
@@ -246,7 +257,7 @@ fn nested_respects_finite_stock_quantity() {
 
 #[test]
 fn nested_rejects_when_total_cut_area_exceeds_stock_area() {
-    let project = nested_project(100, 100, vec![cut(10, 80, 80, 2, false)]);
+    let project = nested_project(mm(100), mm(100), vec![cut(10, mm(80), mm(80), 2, false)]);
 
     let error = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
@@ -257,7 +268,7 @@ fn nested_rejects_when_total_cut_area_exceeds_stock_area() {
 
 #[test]
 fn nested_rejects_individually_unpassable_cut() {
-    let project = nested_project(100, 100, vec![cut(10, 101, 50, 1, false)]);
+    let project = nested_project(mm(100), mm(100), vec![cut(10, mm(101), mm(50), 1, false)]);
 
     let error = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
@@ -269,13 +280,13 @@ fn nested_rejects_individually_unpassable_cut() {
 #[test]
 fn nested_repeats_deterministically_for_all_effort_levels() {
     let project = nested_project(
-        180,
-        120,
+        mm(180),
+        mm(120),
         vec![
-            cut(10, 70, 40, 1, true),
-            cut(20, 60, 50, 1, true),
-            cut(30, 30, 80, 1, true),
-            cut(40, 25, 25, 3, true),
+            cut(10, mm(70), mm(40), 1, true),
+            cut(20, mm(60), mm(50), 1, true),
+            cut(30, mm(30), mm(80), 1, true),
+            cut(40, mm(25), mm(25), 3, true),
         ],
     );
 
@@ -354,20 +365,20 @@ fn rotation_disabled_regression_project(layout: LayoutKind, disabled_cut_id: u64
         name: "rotation-disabled-regression".to_string(),
         stock_pieces: vec![StockPiece {
             id: PieceId(1),
-            width: 2440,
-            length: 1220,
+            width: mm(2440),
+            length: mm(1220),
             quantity: Some(1),
             pattern: PatternDirection::None,
         }],
         cut_pieces: vec![
-            cut(2, 500, 620, 4, disabled_cut_id != 2),
-            cut(3, 1223, 220, 3, disabled_cut_id != 3),
-            cut(4, 110, 100, 30, disabled_cut_id != 4),
-            cut(5, 100, 200, 10, disabled_cut_id != 5),
+            cut(2, mm(500), mm(620), 4, disabled_cut_id != 2),
+            cut(3, mm(1223), mm(220), 3, disabled_cut_id != 3),
+            cut(4, mm(110), mm(100), 30, disabled_cut_id != 4),
+            cut(5, mm(100), mm(200), 10, disabled_cut_id != 5),
         ],
         settings: CutSettings {
             unit: Unit::Millimeter,
-            kerf_width: 2,
+            kerf_width: mm(2),
             linear_kerf: None,
             layout,
         },
@@ -422,16 +433,16 @@ fn linear_kerf_base_project() -> Project {
         name: "linear-kerf".to_string(),
         stock_pieces: vec![StockPiece {
             id: PieceId(1),
-            width: 1000,
-            length: 1000,
+            width: mm(1000),
+            length: mm(1000),
             quantity: Some(1),
             pattern: PatternDirection::None,
         }],
         cut_pieces: vec![CutPiece {
             id: PieceId(2),
             label: "cell".to_string(),
-            width: 100,
-            length: 100,
+            width: mm(100),
+            length: mm(100),
             quantity: 25,
             pattern: PatternDirection::None,
             can_rotate: true,
@@ -466,14 +477,14 @@ fn solution_cuts(solution: &Solution) -> Vec<Cut> {
 #[test]
 fn linear_kerf_zero_reference_treated_as_none() {
     let mut project = linear_kerf_base_project();
-    project.settings.kerf_width = 2;
+    project.settings.kerf_width = mm(2);
 
     let baseline = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
         .expect("baseline should fit");
 
     project.settings.linear_kerf = Some(LinearKerf {
-        extra: 5,
+        extra: mm(5),
         reference: 0,
     });
     let zero_reference = BaselineOptimizer
@@ -487,15 +498,15 @@ fn linear_kerf_zero_reference_treated_as_none() {
 fn linear_kerf_ignored_for_nested() {
     let mut project = linear_kerf_base_project();
     project.settings.layout = LayoutKind::Nested;
-    project.settings.kerf_width = 2;
+    project.settings.kerf_width = mm(2);
 
     let without = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
         .expect("nested without linear should fit");
 
     project.settings.linear_kerf = Some(LinearKerf {
-        extra: 50,
-        reference: 1,
+        extra: mm(50),
+        reference: mm(1),
     });
     let with_linear = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
@@ -517,8 +528,8 @@ fn linear_kerf_increases_total_cut_kerf_in_slicing_tree() {
         .sum();
 
     project.settings.linear_kerf = Some(LinearKerf {
-        extra: 5,
-        reference: 100,
+        extra: mm(5),
+        reference: mm(100),
     });
     let with_linear = BaselineOptimizer
         .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
@@ -538,8 +549,8 @@ fn linear_kerf_increases_total_cut_kerf_in_slicing_tree() {
 fn linear_kerf_widens_cuts_in_proportion_to_length() {
     let mut project = linear_kerf_base_project();
     project.settings.linear_kerf = Some(LinearKerf {
-        extra: 5,
-        reference: 100,
+        extra: mm(5),
+        reference: mm(100),
     });
 
     let solution = BaselineOptimizer
@@ -554,7 +565,8 @@ fn linear_kerf_widens_cuts_in_proportion_to_length() {
             freecut::render::CutOrientation::Horizontal => cut.work_rect().width,
             freecut::render::CutOrientation::Vertical => cut.work_rect().length,
         };
-        let expected = (5u64 * u64::from(length) / 100) as u32;
+        // kerf = (extra * length) / reference (all in milli-units)
+        let expected = (u64::from(mm(5)) * u64::from(length) / u64::from(mm(100))) as u32;
         assert_eq!(
             cut.kerf_width(),
             expected,
@@ -574,10 +586,10 @@ fn linear_kerf_widens_cuts_in_proportion_to_length() {
 #[test]
 fn linear_kerf_solution_passes_internal_geometry_assertions() {
     let mut project = linear_kerf_base_project();
-    project.settings.kerf_width = 1;
+    project.settings.kerf_width = mm(1);
     project.settings.linear_kerf = Some(LinearKerf {
-        extra: 3,
-        reference: 200,
+        extra: mm(3),
+        reference: mm(200),
     });
 
     let solution = BaselineOptimizer

@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use eframe::egui;
 
 use crate::{
+    dim,
     domain::{
         CutPiece, CutSettings, LayoutKind, LinearKerf, PatternDirection, PieceId, Project,
         StockPiece, Unit,
@@ -23,7 +24,7 @@ use crate::{
 };
 
 const APP_TITLE: &str = "Freecut";
-const MAX_DIMENSION: u32 = 100_000;
+const MAX_DIMENSION: u32 = dim::MAX_DIMENSION_MILLI;
 const MAX_QUANTITY: u32 = 100_000;
 const VALIDATION_ERROR_PREFIX_EN: &str = "Input error:";
 const VALIDATION_ERROR_PREFIX_DE: &str = "Eingabefehler:";
@@ -2131,8 +2132,8 @@ fn add_default_stock_piece(state: &mut FreecutAppState) {
     let id = next_piece_id(&state.project);
     state.project.stock_pieces.push(StockPiece {
         id,
-        width: 2440,
-        length: 1220,
+        width: 2440 * dim::MILLI_PER_UNIT,
+        length: 1220 * dim::MILLI_PER_UNIT,
         quantity: Some(1),
         pattern: PatternDirection::None,
     });
@@ -2145,8 +2146,8 @@ fn add_default_cut_piece(state: &mut FreecutAppState) {
     state.project.cut_pieces.push(CutPiece {
         id,
         label: format!("cut-{}", id.0),
-        width: 100,
-        length: 100,
+        width: 100 * dim::MILLI_PER_UNIT,
+        length: 100 * dim::MILLI_PER_UNIT,
         quantity: 1,
         pattern: PatternDirection::None,
         can_rotate: true,
@@ -2220,8 +2221,12 @@ fn next_piece_id(project: &Project) -> PieceId {
 
 fn dimension_drag_value(value: &mut u32) -> egui::DragValue<'_> {
     egui::DragValue::new(value)
-        .speed(1.0)
+        .speed(f64::from(dim::MILLI_PER_UNIT) * 0.05)
         .range(0..=MAX_DIMENSION)
+        .custom_formatter(|n, _| {
+            dim::format_dimension(n.round().clamp(0.0, f64::from(MAX_DIMENSION)) as u32)
+        })
+        .custom_parser(|s| dim::parse_dimension_allowing_zero(s).ok().map(f64::from))
 }
 
 fn quantity_drag_value(value: &mut u32) -> egui::DragValue<'_> {
@@ -2511,9 +2516,9 @@ fn project_validation_messages(project: &Project) -> Vec<&'static str> {
 
 fn default_reference_length(unit: Unit) -> u32 {
     match unit {
-        Unit::Millimeter => 1000,
-        Unit::Inch => 40,
-        Unit::Foot => 4,
+        Unit::Millimeter => 1000 * dim::MILLI_PER_UNIT,
+        Unit::Inch => 40 * dim::MILLI_PER_UNIT,
+        Unit::Foot => 4 * dim::MILLI_PER_UNIT,
     }
 }
 
@@ -2524,7 +2529,7 @@ fn empty_project() -> Project {
         cut_pieces: Vec::new(),
         settings: CutSettings {
             unit: Unit::Millimeter,
-            kerf_width: 3,
+            kerf_width: 3 * dim::MILLI_PER_UNIT,
             linear_kerf: None,
             layout: LayoutKind::Guillotine,
         },
@@ -2621,7 +2626,7 @@ mod tests {
         assert!(state.project.stock_pieces.is_empty());
         assert!(state.project.cut_pieces.is_empty());
         assert_eq!(state.project.settings.layout, LayoutKind::Guillotine);
-        assert_eq!(state.project.settings.kerf_width, 3);
+        assert_eq!(state.project.settings.kerf_width, 3 * dim::MILLI_PER_UNIT);
         assert_eq!(state.optimizer_effort, OptimizerEffort::Fast);
         assert_eq!(state.font_size, UiFontSize::Normal);
         assert_eq!(state.language, UiLanguage::English);
