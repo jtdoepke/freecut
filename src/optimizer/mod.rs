@@ -105,6 +105,9 @@ trait PackingBackend {
     fn stock_area(bin: &Self::Bin) -> u64;
     fn fitness(bin: &Self::Bin) -> f64;
     fn into_solution_sheet(bin: Self::Bin) -> SolutionSheet;
+    fn placed_rects(bin: &Self::Bin) -> Vec<Rect>;
+    fn sheet_dims(bin: &Self::Bin) -> (u32, u32);
+    fn kerf_base(bin: &Self::Bin) -> u32;
 }
 
 fn optimize_population_pipeline<B>(
@@ -118,7 +121,8 @@ where
     basic_feasibility_prefilter(instance)?;
 
     let kerf = instance.kerf;
-    let population = initial_population::<B>(instance, &config.initial);
+    let population =
+        initial_population::<B>(instance, &config.initial, config.prefer_factory_edges);
     let population = run_population_generations(population, config, kerf, B::default_heuristic());
 
     select_best_valid_candidate(population)
@@ -244,6 +248,7 @@ struct PopulationPipelineConfig {
     repair: RepairConfig,
     compaction: CompactionConfig,
     population: PopulationConfig,
+    prefer_factory_edges: bool,
 }
 
 impl PopulationPipelineConfig {
@@ -272,6 +277,7 @@ impl PopulationPipelineConfig {
                 epochs: 1,
                 survivor_limit: Some(16),
             },
+            prefer_factory_edges: true,
         }
     }
 
@@ -292,6 +298,7 @@ impl PopulationPipelineConfig {
                 epochs: 4,
                 survivor_limit: Some(32),
             },
+            prefer_factory_edges: true,
         }
     }
 }
@@ -307,6 +314,7 @@ impl Default for PopulationPipelineConfig {
                 epochs: 0,
                 survivor_limit: None,
             },
+            prefer_factory_edges: false,
         }
     }
 }
@@ -419,6 +427,7 @@ fn shuffle_cut_order(cuts: &[CutInstance], seed: u64) -> Vec<CutInstanceKey> {
 fn candidate_from_seed<B>(
     instance: &ProblemInstance,
     seed: &CandidateSeed<B::Heuristic>,
+    prefer_factory_edges: bool,
 ) -> Option<Candidate<B>>
 where
     B: PackingBackend,
@@ -426,6 +435,7 @@ where
     let mut candidate = Candidate::new(
         StockInventory::new(instance.stock.clone()),
         CutCatalog::new(instance.cuts.clone()),
+        prefer_factory_edges,
     );
     let ordered_cuts = candidate.cuts_for_keys(&seed.cut_order)?;
 
@@ -482,13 +492,14 @@ where
 fn initial_population<B>(
     instance: &ProblemInstance,
     config: &InitialPopulationConfig,
+    prefer_factory_edges: bool,
 ) -> Vec<Candidate<B>>
 where
     B: PackingBackend,
 {
     initial_candidate_seeds::<B>(&instance.cuts, config)
         .iter()
-        .filter_map(|seed| candidate_from_seed::<B>(instance, seed))
+        .filter_map(|seed| candidate_from_seed::<B>(instance, seed, prefer_factory_edges))
         .collect()
 }
 
@@ -575,6 +586,7 @@ where
     let mut child = Candidate::new(
         StockInventory::new(available_stock),
         stock_source.cut_catalog.clone(),
+        stock_source.prefer_factory_edges,
     );
     child.bins.push(rebuilt_donor_bin);
     child.unused_cuts = stock_source
@@ -712,6 +724,7 @@ where
 struct CandidateScore {
     used_stock_count: usize,
     waste_area: u64,
+    factory_edge_score: u64,
     fitness: Option<f64>,
 }
 
@@ -732,6 +745,7 @@ fn compare_candidate_score(left: CandidateScore, right: CandidateScore) -> Order
         .used_stock_count
         .cmp(&left.used_stock_count)
         .then_with(|| right.waste_area.cmp(&left.waste_area))
+        .then_with(|| left.factory_edge_score.cmp(&right.factory_edge_score))
         .then_with(|| compare_optional_fitness(left.fitness, right.fitness))
 }
 
@@ -805,18 +819,24 @@ where
     available_stock: StockInventory,
     unused_cuts: Vec<CutInstance>,
     cut_catalog: CutCatalog,
+    prefer_factory_edges: bool,
 }
 
 impl<B> Candidate<B>
 where
     B: PackingBackend,
 {
-    fn new(available_stock: StockInventory, cut_catalog: CutCatalog) -> Self {
+    fn new(
+        available_stock: StockInventory,
+        cut_catalog: CutCatalog,
+        prefer_factory_edges: bool,
+    ) -> Self {
         Self {
             bins: Vec::new(),
             available_stock,
             unused_cuts: Vec::new(),
             cut_catalog,
+            prefer_factory_edges,
         }
     }
 
@@ -1023,9 +1043,22 @@ where
         let used_stock_area = self.used_stock_area();
         let placed_cut_area = self.placed_cut_area()?;
 
+        let factory_edge_score = if self.prefer_factory_edges {
+            self.bins
+                .iter()
+                .map(|bin| {
+                    let (w, l) = B::sheet_dims(bin);
+                    factory_edge_score_for_sheet(w, l, B::kerf_base(bin), &B::placed_rects(bin))
+                })
+                .sum()
+        } else {
+            0
+        };
+
         Some(CandidateScore {
             used_stock_count: self.bins.len(),
             waste_area: used_stock_area.saturating_sub(placed_cut_area),
+            factory_edge_score,
             fitness: self.fitness(),
         })
     }
@@ -1185,6 +1218,18 @@ impl PackingBackend for BaselineGuillotineBackend {
 
     fn into_solution_sheet(bin: Self::Bin) -> SolutionSheet {
         bin.into_solution_sheet()
+    }
+
+    fn placed_rects(bin: &Self::Bin) -> Vec<Rect> {
+        bin.placed_pieces.iter().map(|p| p.rect).collect()
+    }
+
+    fn sheet_dims(bin: &Self::Bin) -> (u32, u32) {
+        (bin.stock.width, bin.stock.length)
+    }
+
+    fn kerf_base(bin: &Self::Bin) -> u32 {
+        bin.kerf.base()
     }
 }
 
@@ -1876,6 +1921,18 @@ impl PackingBackend for NestedMaxRectsBackend {
     fn into_solution_sheet(bin: Self::Bin) -> SolutionSheet {
         bin.into_solution_sheet()
     }
+
+    fn placed_rects(bin: &Self::Bin) -> Vec<Rect> {
+        bin.placed_pieces.iter().map(|p| p.rect).collect()
+    }
+
+    fn sheet_dims(bin: &Self::Bin) -> (u32, u32) {
+        (bin.stock.width, bin.stock.length)
+    }
+
+    fn kerf_base(bin: &Self::Bin) -> u32 {
+        bin.kerf.base()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2074,6 +2131,75 @@ fn common_interval_length(start1: u32, end1: u32, start2: u32, end2: u32) -> u64
     } else {
         u64::from(end1.min(end2) - start1.max(start2))
     }
+}
+
+const FACTORY_EDGE_SHEET_WEIGHT: u64 = 2;
+
+fn factory_edge_piece_factor(kerf_base: u32) -> (u64, u64) {
+    let den = 1 + u64::from(kerf_base) / 4;
+    (FACTORY_EDGE_SHEET_WEIGHT - 1, den)
+}
+
+fn factory_edge_score_for_sheet(
+    sheet_w: u32,
+    sheet_l: u32,
+    kerf_base: u32,
+    placed: &[Rect],
+) -> u64 {
+    let sheet_w_u64 = u64::from(sheet_w);
+    let sheet_l_u64 = u64::from(sheet_l);
+    let kerf_u64 = u64::from(kerf_base);
+    let mut sheet_contact: u64 = 0;
+
+    for r in placed {
+        if r.x == 0 {
+            sheet_contact =
+                sheet_contact.saturating_add(FACTORY_EDGE_SHEET_WEIGHT * u64::from(r.length));
+        }
+        if rect_right(*r) == sheet_w_u64 {
+            sheet_contact =
+                sheet_contact.saturating_add(FACTORY_EDGE_SHEET_WEIGHT * u64::from(r.length));
+        }
+        if r.y == 0 {
+            sheet_contact =
+                sheet_contact.saturating_add(FACTORY_EDGE_SHEET_WEIGHT * u64::from(r.width));
+        }
+        if rect_bottom(*r) == sheet_l_u64 {
+            sheet_contact =
+                sheet_contact.saturating_add(FACTORY_EDGE_SHEET_WEIGHT * u64::from(r.width));
+        }
+    }
+
+    let mut piece_contact: u64 = 0;
+    for (i, a) in placed.iter().enumerate() {
+        for b in placed.iter().skip(i + 1) {
+            let a_right = rect_right(*a);
+            let b_right = rect_right(*b);
+            let a_bottom = rect_bottom(*a);
+            let b_bottom = rect_bottom(*b);
+
+            if a_right + kerf_u64 == u64::from(b.x) || b_right + kerf_u64 == u64::from(a.x) {
+                piece_contact = piece_contact.saturating_add(common_interval_length(
+                    a.y,
+                    a.y.saturating_add(a.length),
+                    b.y,
+                    b.y.saturating_add(b.length),
+                ));
+            }
+            if a_bottom + kerf_u64 == u64::from(b.y) || b_bottom + kerf_u64 == u64::from(a.y) {
+                piece_contact = piece_contact.saturating_add(common_interval_length(
+                    a.x,
+                    a.x.saturating_add(a.width),
+                    b.x,
+                    b.x.saturating_add(b.width),
+                ));
+            }
+        }
+    }
+
+    let (factor_num, factor_den) = factory_edge_piece_factor(kerf_base);
+    let weighted_piece_contact = piece_contact.saturating_mul(factor_num) / factor_den;
+    sheet_contact.saturating_add(weighted_piece_contact)
 }
 
 fn prune_free_rects(free_rects: &mut Vec<Rect>) {
@@ -2547,7 +2673,7 @@ mod tests {
         cuts.sort_by(compare_cut_instances_for_first_fit);
 
         let heuristic = B::default_heuristic();
-        let mut candidate = Candidate::new(StockInventory::new(stock), cut_catalog);
+        let mut candidate = Candidate::new(StockInventory::new(stock), cut_catalog, false);
 
         for cut in &cuts {
             candidate.place_cut_first_fit(cut, kerf, heuristic);
@@ -2817,6 +2943,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(Vec::new()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         candidate.bins = vec![first_bin, second_bin];
         candidate
@@ -3747,7 +3874,7 @@ mod tests {
 
         let current = first_fit_candidate::<BaselineGuillotineBackend>(instance.clone());
         let seed = sorted_first_fit_candidate_seed::<BaselineGuillotineBackend>(&instance.cuts);
-        let seeded = candidate_from_seed::<BaselineGuillotineBackend>(&instance, &seed)
+        let seeded = candidate_from_seed::<BaselineGuillotineBackend>(&instance, &seed, false)
             .expect("seed keys should resolve through the cut catalog");
 
         assert_eq!(seed.description, CandidateSeedDescription::SortedFirstFit);
@@ -3805,6 +3932,7 @@ mod tests {
         let population = initial_population::<BaselineGuillotineBackend>(
             &instance,
             &InitialPopulationConfig::default(),
+            false,
         );
 
         assert_eq!(population.len(), 1);
@@ -3838,7 +3966,7 @@ mod tests {
             max_candidates: None,
         };
 
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
 
         assert_eq!(population.len(), 2);
         assert_eq!(
@@ -3873,7 +4001,7 @@ mod tests {
             max_candidates: None,
         };
 
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
 
         assert_eq!(population.len(), 1);
         assert_eq!(
@@ -3900,7 +4028,7 @@ mod tests {
             max_candidates: None,
         };
 
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
 
         assert_eq!(population.len(), 2);
         assert!(population.iter().all(|candidate| !candidate.is_valid()));
@@ -4059,7 +4187,7 @@ mod tests {
             include_heuristic_variants: false,
             max_candidates: None,
         };
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
         let before = population_signature(&population);
 
         let after = crossover_population(
@@ -4175,6 +4303,7 @@ mod tests {
         let stock_source = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock.clone()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
 
         let mut small_bin =
@@ -4194,6 +4323,7 @@ mod tests {
         let mut donor = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(Vec::new()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         donor.bins = vec![small_bin, full_bin];
 
@@ -4294,6 +4424,7 @@ mod tests {
         let mut first_parent = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(Vec::new()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         first_parent.bins = vec![first_parent_full_stock, first_parent_partial_stock];
         first_parent.unused_cuts.push(instance.cuts[1].clone());
@@ -4308,6 +4439,7 @@ mod tests {
         let mut second_parent = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(Vec::new()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         second_parent.bins.push(second_parent_full_stock);
         second_parent.unused_cuts.push(instance.cuts[1].clone());
@@ -4370,6 +4502,7 @@ mod tests {
             Some(CandidateScore {
                 used_stock_count: 2,
                 waste_area: 12_500,
+                factory_edge_score: 0,
                 fitness: Some(0.375),
             })
         );
@@ -4454,7 +4587,7 @@ mod tests {
             include_heuristic_variants: false,
             max_candidates: None,
         };
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
         let before = population_signature(&population);
 
         let after = repair_population(
@@ -4477,6 +4610,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock.clone()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         candidate.unused_cuts.push(instance.cuts[0].clone());
 
@@ -4509,6 +4643,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock.clone()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         candidate.unused_cuts.push(instance.cuts[0].clone());
 
@@ -4550,6 +4685,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock.clone()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         candidate.unused_cuts.extend(instance.cuts.iter().cloned());
 
@@ -4578,6 +4714,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock.clone()),
             CutCatalog::new(instance.cuts.clone()),
+            false,
         );
         candidate.unused_cuts.push(instance.cuts[0].clone());
 
@@ -4601,6 +4738,7 @@ mod tests {
         let mut repairable_candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(repairable_instance.stock.clone()),
             CutCatalog::new(repairable_instance.cuts.clone()),
+            false,
         );
         repairable_candidate
             .unused_cuts
@@ -4620,6 +4758,7 @@ mod tests {
         let mut invalid_candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(invalid_instance.stock.clone()),
             CutCatalog::new(invalid_instance.cuts.clone()),
+            false,
         );
         invalid_candidate
             .unused_cuts
@@ -4678,7 +4817,7 @@ mod tests {
             include_heuristic_variants: false,
             max_candidates: None,
         };
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
         let before = population_signature(&population);
 
         let after = run_population_epochs(
@@ -4767,7 +4906,7 @@ mod tests {
             include_heuristic_variants: false,
             max_candidates: None,
         };
-        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let population = initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
 
         let after = run_population_epochs(
             population,
@@ -4899,11 +5038,11 @@ mod tests {
             max_candidates: None,
         };
         let before = select_best_valid_candidate(initial_population::<BaselineGuillotineBackend>(
-            &instance, &config,
+            &instance, &config, false,
         ))
         .expect("valid candidate should be selected");
         let after_population = run_population_epochs(
-            initial_population::<BaselineGuillotineBackend>(&instance, &config),
+            initial_population::<BaselineGuillotineBackend>(&instance, &config, false),
             &PopulationConfig {
                 epochs: 4,
                 survivor_limit: None,
@@ -5041,7 +5180,8 @@ mod tests {
             include_heuristic_variants: false,
             max_candidates: None,
         };
-        let manual_population = initial_population::<BaselineGuillotineBackend>(&instance, &config);
+        let manual_population =
+            initial_population::<BaselineGuillotineBackend>(&instance, &config, false);
         let manual_population = crossover_population(
             manual_population,
             CrossoverConfig { enabled: false },
@@ -5241,6 +5381,7 @@ mod tests {
             Some(CandidateScore {
                 used_stock_count: 1,
                 waste_area: 10_000,
+                factory_edge_score: 0,
                 fitness: Some(0.5),
             })
         );
@@ -5250,6 +5391,7 @@ mod tests {
             Some(CandidateScore {
                 used_stock_count: 2,
                 waste_area: 0,
+                factory_edge_score: 0,
                 fitness: Some(1.0),
             })
         );
@@ -5966,6 +6108,7 @@ mod tests {
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock),
             cut_catalog,
+            false,
         );
         let heuristic = BaselineGuillotineBackend::default_heuristic();
 
@@ -6377,5 +6520,122 @@ mod tests {
         assert_eq!(solution.sheets.len(), 1);
         assert_eq!(solution.sheets[0].placed_pieces.len(), 4);
         assert_solution_within_bounds_and_non_overlapping(&solution);
+    }
+
+    fn r(x: u32, y: u32, w: u32, l: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width: w,
+            length: l,
+        }
+    }
+
+    #[test]
+    fn factory_edge_score_sheet_boundary_basic() {
+        // 100x100 sheet, kerf=0. One 30x30 flush at x=0; one 30x30 floating in interior.
+        let placed = vec![r(0, 10, 30, 30), r(50, 50, 30, 30)];
+        let score = factory_edge_score_for_sheet(100, 100, 0, &placed);
+        // Flush piece contributes SHEET_WEIGHT * length = 2 * 30 = 60.
+        // Floating piece contributes 0. No piece-piece adjacency.
+        assert_eq!(score, 60);
+    }
+
+    #[test]
+    fn factory_edge_score_full_sheet_piece() {
+        // Single piece exactly filling the sheet: contact on all four edges.
+        let placed = vec![r(0, 0, 100, 80)];
+        let score = factory_edge_score_for_sheet(100, 80, 0, &placed);
+        // 2 * (length + length + width + width) = 2 * (80 + 80 + 100 + 100) = 720.
+        assert_eq!(score, 720);
+    }
+
+    #[test]
+    fn factory_edge_score_kerf_aware_adjacency() {
+        // Two 30x30 squares separated by exactly the kerf along x; overlapping y range.
+        let placed_kerf_0 = vec![r(0, 0, 30, 30), r(30, 0, 30, 30)];
+        let placed_kerf_8 = vec![r(0, 0, 30, 30), r(38, 0, 30, 30)];
+
+        // Sheet-boundary contributions are identical for both layouts; only the
+        // piece-piece term differs based on kerf.
+        let score_kerf_0 = factory_edge_score_for_sheet(200, 100, 0, &placed_kerf_0);
+        let score_kerf_8 = factory_edge_score_for_sheet(200, 100, 8, &placed_kerf_8);
+
+        // Piece 1 is flush left (x=0) and top (y=0): 2*30 + 2*30 = 120.
+        // Piece 2 is flush top only: 2*30 = 60.
+        // Sheet contact total: 180.
+        // Piece-piece overlap on the seam: 30 (full common y-interval).
+        // kerf=0: piece_factor = (1, 1) -> add 30 -> total 210.
+        // kerf=8: piece_factor = (1, 1 + 8/4) = (1, 3) -> add 30/3 = 10 -> total 190.
+        assert_eq!(score_kerf_0, 210);
+        assert_eq!(score_kerf_8, 190);
+    }
+
+    #[test]
+    fn compare_candidate_score_factory_edge_tiebreak_after_waste() {
+        let lower_edge = CandidateScore {
+            used_stock_count: 1,
+            waste_area: 1_000,
+            factory_edge_score: 100,
+            fitness: Some(0.5),
+        };
+        let higher_edge = CandidateScore {
+            used_stock_count: 1,
+            waste_area: 1_000,
+            factory_edge_score: 200,
+            fitness: Some(0.5),
+        };
+        assert_eq!(
+            compare_candidate_score(higher_edge, lower_edge),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_candidate_score(lower_edge, higher_edge),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn compare_candidate_score_waste_still_dominates_factory_edge() {
+        // Lower waste with low edge score must beat higher waste with very high edge score.
+        let low_waste = CandidateScore {
+            used_stock_count: 1,
+            waste_area: 100,
+            factory_edge_score: 0,
+            fitness: Some(0.99),
+        };
+        let high_waste_high_edge = CandidateScore {
+            used_stock_count: 1,
+            waste_area: 5_000,
+            factory_edge_score: u64::MAX,
+            fitness: Some(0.5),
+        };
+        assert_eq!(
+            compare_candidate_score(low_waste, high_waste_high_edge),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn from_optimizer_config_prefer_factory_edges_only_for_balanced_and_thorough() {
+        let fast = PopulationPipelineConfig::from_optimizer_config(OptimizerConfig::new(
+            OptimizerEffort::Fast,
+        ));
+        let balanced = PopulationPipelineConfig::from_optimizer_config(OptimizerConfig::new(
+            OptimizerEffort::Balanced,
+        ));
+        let thorough = PopulationPipelineConfig::from_optimizer_config(OptimizerConfig::new(
+            OptimizerEffort::Thorough,
+        ));
+        assert!(!fast.prefer_factory_edges);
+        assert!(balanced.prefer_factory_edges);
+        assert!(thorough.prefer_factory_edges);
+    }
+
+    #[test]
+    fn balanced_factory_edge_score_is_zero_for_empty_candidate() {
+        // An empty placement set has no contact and no adjacency.
+        let score = factory_edge_score_for_sheet(100, 100, 0, &[]);
+        assert_eq!(score, 0);
     }
 }
