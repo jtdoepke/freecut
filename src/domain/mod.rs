@@ -53,7 +53,15 @@ pub struct PieceId(pub u64);
 pub struct CutSettings {
     pub unit: Unit,
     pub kerf_width: u32,
+    #[serde(default)]
+    pub linear_kerf: Option<LinearKerf>,
     pub layout: LayoutKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearKerf {
+    pub extra: u32,
+    pub reference: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{domain::Project, optimizer::OptimizerEffort};
 
-pub const PROJECT_FILE_VERSION: u32 = 1;
+pub const PROJECT_FILE_VERSION: u32 = 2;
 pub const PROJECT_FILE_EXTENSION: &str = "freecut.json";
+
+const SUPPORTED_PROJECT_FILE_VERSIONS: &[u32] = &[1, 2];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectDocument {
@@ -87,7 +89,7 @@ pub fn load_project_file(path: impl AsRef<Path>) -> Result<ProjectDocument, Proj
 pub fn load_project_document_from_str(source: &str) -> Result<ProjectDocument, ProjectIoError> {
     let document = serde_json::from_str::<ProjectDocument>(source)?;
 
-    if document.version != PROJECT_FILE_VERSION {
+    if !SUPPORTED_PROJECT_FILE_VERSIONS.contains(&document.version) {
         return Err(ProjectIoError::UnsupportedVersion(document.version));
     }
 
@@ -97,7 +99,9 @@ pub fn load_project_document_from_str(source: &str) -> Result<ProjectDocument, P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{CutSettings, LayoutKind, PatternDirection, PieceId, StockPiece, Unit};
+    use crate::domain::{
+        CutSettings, LayoutKind, LinearKerf, PatternDirection, PieceId, StockPiece, Unit,
+    };
 
     #[test]
     fn project_document_roundtrip_preserves_project_and_effort() {
@@ -114,6 +118,7 @@ mod tests {
             settings: CutSettings {
                 unit: Unit::Millimeter,
                 kerf_width: 3,
+                linear_kerf: None,
                 layout: LayoutKind::Guillotine,
             },
         };
@@ -162,6 +167,7 @@ mod tests {
                 settings: CutSettings {
                     unit: Unit::Foot,
                     kerf_width: 1,
+                    linear_kerf: None,
                     layout: LayoutKind::Guillotine,
                 },
             },
@@ -173,5 +179,52 @@ mod tests {
         std::fs::remove_file(path).expect("remove project fixture");
 
         assert_eq!(loaded, document);
+    }
+
+    #[test]
+    fn loads_legacy_v1_project_without_linear_kerf_field() {
+        let source = r#"{
+  "version": 1,
+  "project": {
+    "name": "legacy",
+    "stock_pieces": [],
+    "cut_pieces": [],
+    "settings": { "unit": "Millimeter", "kerf_width": 2, "layout": "Guillotine" }
+  },
+  "optimizer_effort": "Balanced"
+}"#;
+
+        let loaded = load_project_document_from_str(source).expect("v1 project should load");
+
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.project.settings.kerf_width, 2);
+        assert_eq!(loaded.project.settings.linear_kerf, None);
+    }
+
+    #[test]
+    fn linear_kerf_roundtrip_preserves_extra_and_reference() {
+        let document = ProjectDocument::new(
+            Project {
+                name: "linear-kerf".to_string(),
+                stock_pieces: Vec::new(),
+                cut_pieces: Vec::new(),
+                settings: CutSettings {
+                    unit: Unit::Millimeter,
+                    kerf_width: 1,
+                    linear_kerf: Some(LinearKerf {
+                        extra: 3,
+                        reference: 1000,
+                    }),
+                    layout: LayoutKind::Guillotine,
+                },
+            },
+            OptimizerEffort::Balanced,
+        );
+
+        let serialized = serde_json::to_string_pretty(&document).expect("serialize");
+        let loaded = load_project_document_from_str(&serialized).expect("load");
+
+        assert_eq!(loaded, document);
+        assert_eq!(loaded.version, PROJECT_FILE_VERSION);
     }
 }

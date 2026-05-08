@@ -9,7 +9,8 @@ use eframe::egui;
 
 use crate::{
     domain::{
-        CutPiece, CutSettings, LayoutKind, PatternDirection, PieceId, Project, StockPiece, Unit,
+        CutPiece, CutSettings, LayoutKind, LinearKerf, PatternDirection, PieceId, Project,
+        StockPiece, Unit,
     },
     export::export_solution_pdf_file,
     import::{import_project_csv_file, CsvImportResult},
@@ -166,6 +167,47 @@ impl UiTexts {
         match self.language {
             UiLanguage::English => "Kerf width",
             UiLanguage::German => "Schnittfuge / Kerf",
+        }
+    }
+
+    fn variable_kerf_label(self) -> &'static str {
+        match self.language {
+            UiLanguage::English => "Variable kerf (long-cut margin)",
+            UiLanguage::German => "Variable Schnittfuge (Zugabe für lange Schnitte)",
+        }
+    }
+
+    fn variable_kerf_extra_label(self) -> &'static str {
+        match self.language {
+            UiLanguage::English => "Extra kerf",
+            UiLanguage::German => "Zusätzliche Schnittfuge",
+        }
+    }
+
+    fn variable_kerf_reference_label(self) -> &'static str {
+        match self.language {
+            UiLanguage::English => "Per reference length",
+            UiLanguage::German => "Pro Referenzlänge",
+        }
+    }
+
+    fn variable_kerf_guillotine_only_hint(self) -> &'static str {
+        match self.language {
+            UiLanguage::English => {
+                "Variable kerf only applies to Guillotine layout; ignored for Nested."
+            }
+            UiLanguage::German => {
+                "Variable Schnittfuge gilt nur für das Guillotine-Layout; im Nested-Layout ignoriert."
+            }
+        }
+    }
+
+    fn variable_kerf_zero_reference_error(self) -> &'static str {
+        match self.language {
+            UiLanguage::English => "Variable kerf reference length must be greater than zero",
+            UiLanguage::German => {
+                "Referenzlänge der variablen Schnittfuge muss größer als null sein"
+            }
         }
     }
 
@@ -990,6 +1032,41 @@ impl FreecutApp {
                     ))
                     .changed();
                 ui.end_row();
+
+                ui.label(texts.variable_kerf_label());
+                let nested = self.state.project.settings.layout == LayoutKind::Nested;
+                let mut variable_enabled = self.state.project.settings.linear_kerf.is_some();
+                let toggle =
+                    ui.add_enabled(!nested, egui::Checkbox::without_text(&mut variable_enabled));
+                if nested {
+                    toggle.on_hover_text(texts.variable_kerf_guillotine_only_hint());
+                } else if toggle.changed() {
+                    self.state.project.settings.linear_kerf = if variable_enabled {
+                        Some(LinearKerf {
+                            extra: 0,
+                            reference: default_reference_length(self.state.project.settings.unit),
+                        })
+                    } else {
+                        None
+                    };
+                    changed = true;
+                }
+                ui.end_row();
+
+                if let Some(linear) = self.state.project.settings.linear_kerf.as_mut() {
+                    ui.label(texts.variable_kerf_extra_label());
+                    changed |= ui.add(dimension_drag_value(&mut linear.extra)).changed();
+                    ui.end_row();
+
+                    ui.label(texts.variable_kerf_reference_label());
+                    let reference_response = ui.add(dimension_drag_value(&mut linear.reference));
+                    changed |= reference_response.changed();
+                    if linear.reference == 0 {
+                        reference_response
+                            .on_hover_text(texts.variable_kerf_zero_reference_error());
+                    }
+                    ui.end_row();
+                }
 
                 ui.label(texts.layout_setting_label());
                 changed |= layout_combo(
@@ -2422,8 +2499,22 @@ fn validation_report(project: &Project) -> ProjectValidationReport {
     }
 }
 
-fn project_validation_messages(_project: &Project) -> Vec<&'static str> {
-    Vec::new()
+fn project_validation_messages(project: &Project) -> Vec<&'static str> {
+    let mut messages = Vec::new();
+    if let Some(linear) = project.settings.linear_kerf {
+        if linear.reference == 0 {
+            messages.push("variable_kerf_zero_reference");
+        }
+    }
+    messages
+}
+
+fn default_reference_length(unit: Unit) -> u32 {
+    match unit {
+        Unit::Millimeter => 1000,
+        Unit::Inch => 40,
+        Unit::Foot => 4,
+    }
 }
 
 fn empty_project() -> Project {
@@ -2434,6 +2525,7 @@ fn empty_project() -> Project {
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 3,
+            linear_kerf: None,
             layout: LayoutKind::Guillotine,
         },
     }

@@ -1,9 +1,10 @@
 use freecut::{
     domain::{
-        CutPiece, CutSettings, LayoutKind, PatternDirection, PieceId, Project, StockPiece, Unit,
+        CutPiece, CutSettings, LayoutKind, LinearKerf, PatternDirection, PieceId, Project,
+        StockPiece, Unit,
     },
     optimizer::{BaselineOptimizer, OptimizeError, OptimizerConfig, OptimizerEffort},
-    render::Rect,
+    render::{Cut, Rect, SliceNode, Solution},
 };
 
 #[test]
@@ -58,6 +59,7 @@ fn balanced_optimizer_places_gui_case_after_adding_one_more_small_cut() {
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 0,
+            linear_kerf: None,
             layout: LayoutKind::Guillotine,
         },
     };
@@ -113,6 +115,7 @@ fn thorough_guillotine_places_q71_side_strip_case() {
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 1,
+            linear_kerf: None,
             layout: LayoutKind::Guillotine,
         },
     };
@@ -213,6 +216,7 @@ fn nested_uses_pattern_wildcard_like_guillotine() {
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 0,
+            linear_kerf: None,
             layout: LayoutKind::Nested,
         },
     };
@@ -339,6 +343,7 @@ fn nested_project(stock_width: u32, stock_length: u32, cut_pieces: Vec<CutPiece>
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 0,
+            linear_kerf: None,
             layout: LayoutKind::Nested,
         },
     }
@@ -363,6 +368,7 @@ fn rotation_disabled_regression_project(layout: LayoutKind, disabled_cut_id: u64
         settings: CutSettings {
             unit: Unit::Millimeter,
             kerf_width: 2,
+            linear_kerf: None,
             layout,
         },
     }
@@ -409,4 +415,175 @@ fn rects_overlap(left: Rect, right: Rect) -> bool {
         && left.x + left.width > right.x
         && left.y < right.y + right.length
         && left.y + left.length > right.y
+}
+
+fn linear_kerf_base_project() -> Project {
+    Project {
+        name: "linear-kerf".to_string(),
+        stock_pieces: vec![StockPiece {
+            id: PieceId(1),
+            width: 1000,
+            length: 1000,
+            quantity: Some(1),
+            pattern: PatternDirection::None,
+        }],
+        cut_pieces: vec![CutPiece {
+            id: PieceId(2),
+            label: "cell".to_string(),
+            width: 100,
+            length: 100,
+            quantity: 25,
+            pattern: PatternDirection::None,
+            can_rotate: true,
+        }],
+        settings: CutSettings {
+            unit: Unit::Millimeter,
+            kerf_width: 0,
+            linear_kerf: None,
+            layout: LayoutKind::Guillotine,
+        },
+    }
+}
+
+fn collect_cuts(node: &SliceNode, out: &mut Vec<Cut>) {
+    if let SliceNode::Cut { cut, first, second } = node {
+        out.push(*cut);
+        collect_cuts(first, out);
+        collect_cuts(second, out);
+    }
+}
+
+fn solution_cuts(solution: &Solution) -> Vec<Cut> {
+    let mut cuts = Vec::new();
+    for sheet in &solution.sheets {
+        if let Some(tree) = &sheet.cutting_guide {
+            collect_cuts(tree, &mut cuts);
+        }
+    }
+    cuts
+}
+
+#[test]
+fn linear_kerf_zero_reference_treated_as_none() {
+    let mut project = linear_kerf_base_project();
+    project.settings.kerf_width = 2;
+
+    let baseline = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("baseline should fit");
+
+    project.settings.linear_kerf = Some(LinearKerf {
+        extra: 5,
+        reference: 0,
+    });
+    let zero_reference = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("zero-reference should fit");
+
+    assert_eq!(baseline, zero_reference);
+}
+
+#[test]
+fn linear_kerf_ignored_for_nested() {
+    let mut project = linear_kerf_base_project();
+    project.settings.layout = LayoutKind::Nested;
+    project.settings.kerf_width = 2;
+
+    let without = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("nested without linear should fit");
+
+    project.settings.linear_kerf = Some(LinearKerf {
+        extra: 50,
+        reference: 1,
+    });
+    let with_linear = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("nested with linear should fit");
+
+    assert_eq!(without, with_linear);
+}
+
+#[test]
+fn linear_kerf_increases_total_cut_kerf_in_slicing_tree() {
+    let mut project = linear_kerf_base_project();
+
+    let baseline = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("baseline should fit");
+    let baseline_kerf_sum: u64 = solution_cuts(&baseline)
+        .iter()
+        .map(|c| u64::from(c.kerf_width()))
+        .sum();
+
+    project.settings.linear_kerf = Some(LinearKerf {
+        extra: 5,
+        reference: 100,
+    });
+    let with_linear = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("linear-kerf project should fit");
+    let linear_kerf_sum: u64 = solution_cuts(&with_linear)
+        .iter()
+        .map(|c| u64::from(c.kerf_width()))
+        .sum();
+
+    assert!(
+        linear_kerf_sum > baseline_kerf_sum,
+        "linear kerf should widen cuts: baseline={baseline_kerf_sum} linear={linear_kerf_sum}"
+    );
+}
+
+#[test]
+fn linear_kerf_widens_cuts_in_proportion_to_length() {
+    let mut project = linear_kerf_base_project();
+    project.settings.linear_kerf = Some(LinearKerf {
+        extra: 5,
+        reference: 100,
+    });
+
+    let solution = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Fast))
+        .expect("variable-kerf project should fit");
+
+    let cuts = solution_cuts(&solution);
+    assert!(!cuts.is_empty(), "expected cutting guide to contain cuts");
+
+    for cut in &cuts {
+        let length = match cut.orientation() {
+            freecut::render::CutOrientation::Horizontal => cut.work_rect().width,
+            freecut::render::CutOrientation::Vertical => cut.work_rect().length,
+        };
+        let expected = (5u64 * u64::from(length) / 100) as u32;
+        assert_eq!(
+            cut.kerf_width(),
+            expected,
+            "cut on work_rect {:?} oriented {:?} should have kerf {expected} for length {length}, got {}",
+            cut.work_rect(),
+            cut.orientation(),
+            cut.kerf_width()
+        );
+    }
+
+    assert!(
+        cuts.iter().any(|c| c.kerf_width() > 0),
+        "expected at least one non-zero kerf cut"
+    );
+}
+
+#[test]
+fn linear_kerf_solution_passes_internal_geometry_assertions() {
+    let mut project = linear_kerf_base_project();
+    project.settings.kerf_width = 1;
+    project.settings.linear_kerf = Some(LinearKerf {
+        extra: 3,
+        reference: 200,
+    });
+
+    let solution = BaselineOptimizer
+        .optimize_with_config(&project, OptimizerConfig::new(OptimizerEffort::Balanced))
+        .expect("variable-kerf project should fit");
+
+    assert!(!solution.sheets.is_empty());
+    assert!(solution.sheets[0].cutting_guide.is_some());
 }

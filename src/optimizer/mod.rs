@@ -4,7 +4,7 @@
 //! data rather than leaking an external library's result shape into the rest of the application.
 
 use crate::{
-    domain::{LayoutKind, PatternDirection, PieceId, Project},
+    domain::{CutSettings, LayoutKind, PatternDirection, PieceId, Project},
     render::{
         Cut as GuideCut, CutOrientation, LeafKind as GuideLeafKind, PlacedPiece, Rect,
         SliceNode as GuideSliceNode, Solution, SolutionSheet,
@@ -90,7 +90,7 @@ trait PackingBackend {
     fn heuristic_variants() -> Vec<Self::Heuristic> {
         vec![Self::default_heuristic()]
     }
-    fn new_bin(stock: StockInstance, kerf_width: u32) -> Self::Bin;
+    fn new_bin(stock: StockInstance, kerf: KerfModel) -> Self::Bin;
     fn insert(bin: &mut Self::Bin, cut: &CutInstance, heuristic: Self::Heuristic) -> bool;
     fn clone_stock_instance(bin: &Self::Bin) -> StockInstance;
     fn stock_key(bin: &Self::Bin) -> StockInstanceKey {
@@ -112,10 +112,9 @@ where
 {
     basic_feasibility_prefilter(instance)?;
 
-    let kerf_width = instance.kerf_width;
+    let kerf = instance.kerf;
     let population = initial_population::<B>(instance, &config.initial);
-    let population =
-        run_population_generations(population, config, kerf_width, B::default_heuristic());
+    let population = run_population_generations(population, config, kerf, B::default_heuristic());
 
     select_best_valid_candidate(population)
         .map(|candidate| candidate.into_solution(layout))
@@ -426,7 +425,7 @@ where
     let ordered_cuts = candidate.cuts_for_keys(&seed.cut_order)?;
 
     for cut in &ordered_cuts {
-        candidate.place_cut_first_fit(cut, instance.kerf_width, seed.heuristic);
+        candidate.place_cut_first_fit(cut, instance.kerf, seed.heuristic);
     }
 
     Some(candidate)
@@ -491,7 +490,7 @@ where
 fn crossover_population<B>(
     population: Vec<Candidate<B>>,
     config: CrossoverConfig,
-    kerf_width: u32,
+    kerf: KerfModel,
     heuristic: B::Heuristic,
 ) -> Vec<Candidate<B>>
 where
@@ -506,7 +505,7 @@ where
         .filter_map(|parents| match parents {
             [left, right] => {
                 let donor_bin_index = best_donor_bin_index(right)?;
-                crossover_child_from_donor_bin(left, right, donor_bin_index, kerf_width, heuristic)
+                crossover_child_from_donor_bin(left, right, donor_bin_index, kerf, heuristic)
             }
             _ => None,
         })
@@ -543,7 +542,7 @@ fn crossover_child_from_donor_bin<B>(
     stock_source: &Candidate<B>,
     donor: &Candidate<B>,
     donor_bin_index: usize,
-    kerf_width: u32,
+    kerf: KerfModel,
     heuristic: B::Heuristic,
 ) -> Option<Candidate<B>>
 where
@@ -555,7 +554,7 @@ where
     let donor_cut_keys = B::placed_cut_keys(donor_bin);
     let donor_cuts = stock_source.cuts_for_keys(&donor_cut_keys)?;
 
-    let mut rebuilt_donor_bin = B::new_bin(donor_stock, kerf_width);
+    let mut rebuilt_donor_bin = B::new_bin(donor_stock, kerf);
     for cut in &donor_cuts {
         if !B::insert(&mut rebuilt_donor_bin, cut, heuristic) {
             return None;
@@ -587,7 +586,7 @@ where
 fn repair_population<B>(
     population: Vec<Candidate<B>>,
     config: RepairConfig,
-    kerf_width: u32,
+    kerf: KerfModel,
     heuristic: B::Heuristic,
 ) -> Vec<Candidate<B>>
 where
@@ -600,7 +599,7 @@ where
     population
         .into_iter()
         .map(|mut candidate| {
-            candidate.reinsert_unused_first_fit(kerf_width, heuristic);
+            candidate.reinsert_unused_first_fit(kerf, heuristic);
             candidate
         })
         .collect()
@@ -629,7 +628,7 @@ where
 fn run_population_generations<B>(
     population: Vec<Candidate<B>>,
     config: &PopulationPipelineConfig,
-    kerf_width: u32,
+    kerf: KerfModel,
     heuristic: B::Heuristic,
 ) -> Vec<Candidate<B>>
 where
@@ -638,10 +637,10 @@ where
     let mut population = population;
 
     for _ in 0..config.population.epochs {
-        population = crossover_population(population, config.crossover, kerf_width, heuristic);
-        population = repair_population(population, config.repair, kerf_width, heuristic);
+        population = crossover_population(population, config.crossover, kerf, heuristic);
+        population = repair_population(population, config.repair, kerf, heuristic);
         population = compact_population(population, config.compaction);
-        population = repair_population(population, config.repair, kerf_width, heuristic);
+        population = repair_population(population, config.repair, kerf, heuristic);
         population = survival_generation(population, config.population.survivor_limit);
     }
 
@@ -774,7 +773,7 @@ impl StockInventory {
     fn take_first_fitting_stock<B>(
         &mut self,
         cut: &CutInstance,
-        kerf_width: u32,
+        kerf: KerfModel,
         heuristic: B::Heuristic,
     ) -> Option<B::Bin>
     where
@@ -782,7 +781,7 @@ impl StockInventory {
     {
         for stock_index in 0..self.stock.len() {
             let stock = self.stock[stock_index].clone();
-            let mut bin = B::new_bin(stock, kerf_width);
+            let mut bin = B::new_bin(stock, kerf);
             if B::insert(&mut bin, cut, heuristic) {
                 self.stock.remove(stock_index);
                 return Some(bin);
@@ -819,7 +818,7 @@ where
     fn place_cut_first_fit(
         &mut self,
         cut: &CutInstance,
-        kerf_width: u32,
+        kerf: KerfModel,
         heuristic: B::Heuristic,
     ) -> bool {
         for bin in &mut self.bins {
@@ -831,7 +830,7 @@ where
 
         if let Some(bin) = self
             .available_stock
-            .take_first_fitting_stock::<B>(cut, kerf_width, heuristic)
+            .take_first_fitting_stock::<B>(cut, kerf, heuristic)
         {
             self.bins.push(bin);
             self.remove_unused_cut(CutInstanceKey::from(cut));
@@ -847,7 +846,7 @@ where
         &mut self,
         bin_index: usize,
         keys: &[CutInstanceKey],
-        kerf_width: u32,
+        kerf: KerfModel,
         heuristic: B::Heuristic,
     ) -> Option<Vec<PlacedCutRecord>> {
         let bin = self.bins.get(bin_index)?;
@@ -870,7 +869,7 @@ where
         let remaining_cuts = self.cuts_for_keys(&remaining_keys)?;
         let removed_cuts = self.cuts_for_keys(&removed_keys)?;
 
-        let mut rebuilt_bin = B::new_bin(stock, kerf_width);
+        let mut rebuilt_bin = B::new_bin(stock, kerf);
         for cut in &remaining_cuts {
             if !B::insert(&mut rebuilt_bin, cut, heuristic) {
                 return None;
@@ -894,12 +893,12 @@ where
             .retain(|cut| CutInstanceKey::from(cut) != key);
     }
 
-    fn reinsert_unused_first_fit(&mut self, kerf_width: u32, heuristic: B::Heuristic) -> usize {
+    fn reinsert_unused_first_fit(&mut self, kerf: KerfModel, heuristic: B::Heuristic) -> usize {
         let unused_cuts = std::mem::take(&mut self.unused_cuts);
         let mut reinserted = 0;
 
         for cut in unused_cuts {
-            if self.place_cut_first_fit(&cut, kerf_width, heuristic) {
+            if self.place_cut_first_fit(&cut, kerf, heuristic) {
                 reinserted += 1;
             }
         }
@@ -1144,8 +1143,8 @@ impl PackingBackend for BaselineGuillotineBackend {
         ]
     }
 
-    fn new_bin(stock: StockInstance, kerf_width: u32) -> Self::Bin {
-        GuillotineSheet::new(stock, kerf_width)
+    fn new_bin(stock: StockInstance, kerf: KerfModel) -> Self::Bin {
+        GuillotineSheet::new(stock, kerf)
     }
 
     fn insert(bin: &mut Self::Bin, cut: &CutInstance, heuristic: Self::Heuristic) -> bool {
@@ -1187,7 +1186,7 @@ impl PackingBackend for BaselineGuillotineBackend {
 #[derive(Debug, Clone)]
 struct GuillotineSheet {
     stock: StockInstance,
-    kerf_width: u32,
+    kerf: KerfModel,
     free_rects: Vec<Rect>,
     placed_pieces: Vec<PlacedPiece>,
     // Transitional Phase-3 state: kept only while every chosen free rect still
@@ -1197,7 +1196,7 @@ struct GuillotineSheet {
 }
 
 impl GuillotineSheet {
-    fn new(stock: StockInstance, kerf_width: u32) -> Self {
+    fn new(stock: StockInstance, kerf: KerfModel) -> Self {
         let stock_rect = Rect {
             x: 0,
             y: 0,
@@ -1208,7 +1207,7 @@ impl GuillotineSheet {
         Self {
             free_rects: vec![stock_rect],
             stock,
-            kerf_width,
+            kerf,
             placed_pieces: Vec::new(),
             slicing_tree: Some(GuillotineSliceNode::free(stock_rect)),
         }
@@ -1234,7 +1233,7 @@ impl GuillotineSheet {
 
         let split_direction = split_direction(free_rect, fit.rect, heuristic.split);
         let subtree =
-            guillotine_insert_subtree(free_rect, fit.rect, cut, split_direction, self.kerf_width);
+            guillotine_insert_subtree(free_rect, fit.rect, cut, split_direction, self.kerf);
 
         self.free_rects.swap_remove(free_index);
         self.split_free_rect_in_direction(free_rect, fit.rect, split_direction);
@@ -1280,44 +1279,48 @@ impl GuillotineSheet {
     }
 
     fn split_horizontal(&mut self, free_rect: Rect, placed: Rect) {
+        let horizontal_kerf = self.kerf.for_cut(free_rect.width);
         let remaining_length = free_rect.length - placed.length;
-        if remaining_length > self.kerf_width {
+        if remaining_length > horizontal_kerf {
             self.free_rects.push(Rect {
                 x: free_rect.x,
-                y: free_rect.y + placed.length + self.kerf_width,
+                y: free_rect.y + placed.length + horizontal_kerf,
                 width: free_rect.width,
-                length: remaining_length - self.kerf_width,
+                length: remaining_length - horizontal_kerf,
             });
         }
 
+        let vertical_kerf = self.kerf.for_cut(placed.length);
         let remaining_width = free_rect.width - placed.width;
-        if remaining_width > self.kerf_width {
+        if remaining_width > vertical_kerf {
             self.free_rects.push(Rect {
-                x: free_rect.x + placed.width + self.kerf_width,
+                x: free_rect.x + placed.width + vertical_kerf,
                 y: free_rect.y,
-                width: remaining_width - self.kerf_width,
+                width: remaining_width - vertical_kerf,
                 length: placed.length,
             });
         }
     }
 
     fn split_vertical(&mut self, free_rect: Rect, placed: Rect) {
+        let horizontal_kerf = self.kerf.for_cut(placed.width);
         let remaining_length = free_rect.length - placed.length;
-        if remaining_length > self.kerf_width {
+        if remaining_length > horizontal_kerf {
             self.free_rects.push(Rect {
                 x: free_rect.x,
-                y: free_rect.y + placed.length + self.kerf_width,
+                y: free_rect.y + placed.length + horizontal_kerf,
                 width: placed.width,
-                length: remaining_length - self.kerf_width,
+                length: remaining_length - horizontal_kerf,
             });
         }
 
+        let vertical_kerf = self.kerf.for_cut(free_rect.length);
         let remaining_width = free_rect.width - placed.width;
-        if remaining_width > self.kerf_width {
+        if remaining_width > vertical_kerf {
             self.free_rects.push(Rect {
-                x: free_rect.x + placed.width + self.kerf_width,
+                x: free_rect.x + placed.width + vertical_kerf,
                 y: free_rect.y,
-                width: remaining_width - self.kerf_width,
+                width: remaining_width - vertical_kerf,
                 length: free_rect.length,
             });
         }
@@ -1333,7 +1336,7 @@ impl GuillotineSheet {
                     if let Some(merged) = merge_adjacent_rects(
                         self.free_rects[left_index],
                         self.free_rects[right_index],
-                        self.kerf_width,
+                        self.kerf,
                     ) {
                         self.free_rects[left_index] = merged;
                         self.free_rects.swap_remove(right_index);
@@ -1505,17 +1508,17 @@ fn guillotine_insert_subtree(
     placed: Rect,
     cut: &CutInstance,
     direction: GuillotineSplitDirection,
-    kerf_width: u32,
+    kerf: KerfModel,
 ) -> Option<GuillotineSliceNode> {
     debug_assert_eq!(placed.x, free_rect.x);
     debug_assert_eq!(placed.y, free_rect.y);
 
     match direction {
         GuillotineSplitDirection::Horizontal => {
-            guillotine_horizontal_insert_subtree(free_rect, placed, cut, kerf_width)
+            guillotine_horizontal_insert_subtree(free_rect, placed, cut, kerf)
         }
         GuillotineSplitDirection::Vertical => {
-            guillotine_vertical_insert_subtree(free_rect, placed, cut, kerf_width)
+            guillotine_vertical_insert_subtree(free_rect, placed, cut, kerf)
         }
     }
 }
@@ -1524,13 +1527,14 @@ fn guillotine_horizontal_insert_subtree(
     free_rect: Rect,
     placed: Rect,
     cut: &CutInstance,
-    kerf_width: u32,
+    kerf: KerfModel,
 ) -> Option<GuillotineSliceNode> {
     let remaining_length = free_rect.length - placed.length;
     let remaining_width = free_rect.width - placed.width;
     let mut top_node = GuillotineSliceNode::cut_piece(placed, cut);
 
-    if remaining_width > kerf_width {
+    let vertical_kerf = kerf.for_cut(placed.length);
+    if remaining_width > vertical_kerf {
         let top_rect = Rect {
             x: free_rect.x,
             y: free_rect.y,
@@ -1538,13 +1542,17 @@ fn guillotine_horizontal_insert_subtree(
             length: placed.length,
         };
         let right_rect = Rect {
-            x: free_rect.x + placed.width + kerf_width,
+            x: free_rect.x + placed.width + vertical_kerf,
             y: free_rect.y,
-            width: remaining_width - kerf_width,
+            width: remaining_width - vertical_kerf,
             length: placed.length,
         };
-        let vertical_cut =
-            GuideCut::new(top_rect, CutOrientation::Vertical, placed.width, kerf_width)?;
+        let vertical_cut = GuideCut::new(
+            top_rect,
+            CutOrientation::Vertical,
+            placed.width,
+            vertical_kerf,
+        )?;
         top_node = GuillotineSliceNode::cut(
             vertical_cut,
             top_node,
@@ -1552,18 +1560,19 @@ fn guillotine_horizontal_insert_subtree(
         );
     }
 
-    if remaining_length > kerf_width {
+    let horizontal_kerf = kerf.for_cut(free_rect.width);
+    if remaining_length > horizontal_kerf {
         let bottom_rect = Rect {
             x: free_rect.x,
-            y: free_rect.y + placed.length + kerf_width,
+            y: free_rect.y + placed.length + horizontal_kerf,
             width: free_rect.width,
-            length: remaining_length - kerf_width,
+            length: remaining_length - horizontal_kerf,
         };
         let horizontal_cut = GuideCut::new(
             free_rect,
             CutOrientation::Horizontal,
             placed.length,
-            kerf_width,
+            horizontal_kerf,
         )?;
         return Some(GuillotineSliceNode::cut(
             horizontal_cut,
@@ -1579,13 +1588,14 @@ fn guillotine_vertical_insert_subtree(
     free_rect: Rect,
     placed: Rect,
     cut: &CutInstance,
-    kerf_width: u32,
+    kerf: KerfModel,
 ) -> Option<GuillotineSliceNode> {
     let remaining_length = free_rect.length - placed.length;
     let remaining_width = free_rect.width - placed.width;
     let mut left_node = GuillotineSliceNode::cut_piece(placed, cut);
 
-    if remaining_length > kerf_width {
+    let horizontal_kerf = kerf.for_cut(placed.width);
+    if remaining_length > horizontal_kerf {
         let left_rect = Rect {
             x: free_rect.x,
             y: free_rect.y,
@@ -1594,15 +1604,15 @@ fn guillotine_vertical_insert_subtree(
         };
         let bottom_rect = Rect {
             x: free_rect.x,
-            y: free_rect.y + placed.length + kerf_width,
+            y: free_rect.y + placed.length + horizontal_kerf,
             width: placed.width,
-            length: remaining_length - kerf_width,
+            length: remaining_length - horizontal_kerf,
         };
         let horizontal_cut = GuideCut::new(
             left_rect,
             CutOrientation::Horizontal,
             placed.length,
-            kerf_width,
+            horizontal_kerf,
         )?;
         left_node = GuillotineSliceNode::cut(
             horizontal_cut,
@@ -1611,18 +1621,19 @@ fn guillotine_vertical_insert_subtree(
         );
     }
 
-    if remaining_width > kerf_width {
+    let vertical_kerf = kerf.for_cut(free_rect.length);
+    if remaining_width > vertical_kerf {
         let right_rect = Rect {
-            x: free_rect.x + placed.width + kerf_width,
+            x: free_rect.x + placed.width + vertical_kerf,
             y: free_rect.y,
-            width: remaining_width - kerf_width,
+            width: remaining_width - vertical_kerf,
             length: free_rect.length,
         };
         let vertical_cut = GuideCut::new(
             free_rect,
             CutOrientation::Vertical,
             placed.width,
-            kerf_width,
+            vertical_kerf,
         )?;
         return Some(GuillotineSliceNode::cut(
             vertical_cut,
@@ -1705,40 +1716,42 @@ fn free_rect_choice_score(
     }
 }
 
-fn merge_adjacent_rects(left: Rect, right: Rect, kerf_width: u32) -> Option<Rect> {
+fn merge_adjacent_rects(left: Rect, right: Rect, kerf: KerfModel) -> Option<Rect> {
     if left.x == right.x && left.width == right.width {
-        if left.y + left.length + kerf_width == right.y {
+        let horizontal_kerf = kerf.for_cut(left.width);
+        if left.y + left.length + horizontal_kerf == right.y {
             return Some(Rect {
                 x: left.x,
                 y: left.y,
                 width: left.width,
-                length: left.length + kerf_width + right.length,
+                length: left.length + horizontal_kerf + right.length,
             });
         }
-        if right.y + right.length + kerf_width == left.y {
+        if right.y + right.length + horizontal_kerf == left.y {
             return Some(Rect {
                 x: right.x,
                 y: right.y,
                 width: right.width,
-                length: right.length + kerf_width + left.length,
+                length: right.length + horizontal_kerf + left.length,
             });
         }
     }
 
     if left.y == right.y && left.length == right.length {
-        if left.x + left.width + kerf_width == right.x {
+        let vertical_kerf = kerf.for_cut(left.length);
+        if left.x + left.width + vertical_kerf == right.x {
             return Some(Rect {
                 x: left.x,
                 y: left.y,
-                width: left.width + kerf_width + right.width,
+                width: left.width + vertical_kerf + right.width,
                 length: left.length,
             });
         }
-        if right.x + right.width + kerf_width == left.x {
+        if right.x + right.width + vertical_kerf == left.x {
             return Some(Rect {
                 x: right.x,
                 y: right.y,
-                width: right.width + kerf_width + left.width,
+                width: right.width + vertical_kerf + left.width,
                 length: right.length,
             });
         }
@@ -1820,8 +1833,8 @@ impl PackingBackend for NestedMaxRectsBackend {
         ]
     }
 
-    fn new_bin(stock: StockInstance, kerf_width: u32) -> Self::Bin {
-        NestedSheet::new(stock, kerf_width)
+    fn new_bin(stock: StockInstance, kerf: KerfModel) -> Self::Bin {
+        NestedSheet::new(stock, kerf)
     }
 
     fn insert(bin: &mut Self::Bin, cut: &CutInstance, heuristic: Self::Heuristic) -> bool {
@@ -1863,13 +1876,13 @@ impl PackingBackend for NestedMaxRectsBackend {
 #[derive(Debug, Clone)]
 struct NestedSheet {
     stock: StockInstance,
-    kerf_width: u32,
+    kerf: KerfModel,
     free_rects: Vec<Rect>,
     placed_pieces: Vec<PlacedPiece>,
 }
 
 impl NestedSheet {
-    fn new(stock: StockInstance, kerf_width: u32) -> Self {
+    fn new(stock: StockInstance, kerf: KerfModel) -> Self {
         Self {
             free_rects: vec![Rect {
                 x: 0,
@@ -1878,7 +1891,7 @@ impl NestedSheet {
                 length: stock.length,
             }],
             stock,
-            kerf_width,
+            kerf,
             placed_pieces: Vec::new(),
         }
     }
@@ -1997,8 +2010,12 @@ impl NestedSheet {
     }
 
     fn split_free_rects(&mut self, placed: Rect) {
-        let occupied =
-            expand_rect_for_kerf(placed, self.stock.width, self.stock.length, self.kerf_width);
+        let occupied = expand_rect_for_kerf(
+            placed,
+            self.stock.width,
+            self.stock.length,
+            self.kerf.base(),
+        );
         for index in (0..self.free_rects.len()).rev() {
             let free_rect = self.free_rects[index];
             if !rects_intersect(free_rect, occupied) {
@@ -2340,11 +2357,53 @@ impl OptimizerConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct KerfModel {
+    base: u32,
+    linear: Option<(u32, u32)>,
+}
+
+impl KerfModel {
+    fn from_settings(settings: &CutSettings) -> Self {
+        let linear = settings.linear_kerf.and_then(|lk| {
+            if lk.reference == 0 || settings.layout == LayoutKind::Nested {
+                None
+            } else {
+                Some((lk.extra, lk.reference))
+            }
+        });
+        Self {
+            base: settings.kerf_width,
+            linear,
+        }
+    }
+
+    #[cfg(test)]
+    fn constant(base: u32) -> Self {
+        Self { base, linear: None }
+    }
+
+    fn for_cut(self, length: u32) -> u32 {
+        match self.linear {
+            None => self.base,
+            Some((extra, reference)) => {
+                let add = u64::from(extra) * u64::from(length) / u64::from(reference);
+                self.base
+                    .saturating_add(u32::try_from(add).unwrap_or(u32::MAX))
+            }
+        }
+    }
+
+    fn base(self) -> u32 {
+        self.base
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProblemInstance {
     stock: Vec<StockInstance>,
     cuts: Vec<CutInstance>,
-    kerf_width: u32,
+    kerf: KerfModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2432,7 +2491,7 @@ fn expand_project(project: &Project) -> Result<ProblemInstance, OptimizeError> {
     Ok(ProblemInstance {
         stock,
         cuts,
-        kerf_width: project.settings.kerf_width,
+        kerf: KerfModel::from_settings(&project.settings),
     })
 }
 
@@ -2477,7 +2536,7 @@ mod tests {
         let ProblemInstance {
             stock,
             mut cuts,
-            kerf_width,
+            kerf,
         } = instance;
         let cut_catalog = CutCatalog::new(cuts.clone());
         cuts.sort_by(compare_cut_instances_for_first_fit);
@@ -2486,7 +2545,7 @@ mod tests {
         let mut candidate = Candidate::new(StockInventory::new(stock), cut_catalog);
 
         for cut in &cuts {
-            candidate.place_cut_first_fit(cut, kerf_width, heuristic);
+            candidate.place_cut_first_fit(cut, kerf, heuristic);
         }
 
         candidate
@@ -2500,6 +2559,7 @@ mod tests {
             settings: CutSettings {
                 unit: Unit::Millimeter,
                 kerf_width: 3,
+                linear_kerf: None,
                 layout: LayoutKind::Guillotine,
             },
         }
@@ -2564,7 +2624,7 @@ mod tests {
                 length,
                 pattern: PatternDirection::None,
             },
-            kerf_width,
+            KerfModel::constant(kerf_width),
         )
     }
 
@@ -2577,7 +2637,7 @@ mod tests {
                 length: 300,
                 pattern: PatternDirection::None,
             },
-            0,
+            KerfModel::constant(0),
         );
         sheet.free_rects = free_rects;
         sheet
@@ -2736,14 +2796,14 @@ mod tests {
         instance: &ProblemInstance,
     ) -> Candidate<BaselineGuillotineBackend> {
         let mut first_bin =
-            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut first_bin,
             &instance.cuts[0],
             BaselineGuillotineBackend::default_heuristic()
         ));
         let mut second_bin =
-            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut second_bin,
             &instance.cuts[1],
@@ -2840,7 +2900,7 @@ mod tests {
 
         let instance = expand_project(&project).expect("project should expand");
 
-        assert_eq!(instance.kerf_width, 3);
+        assert_eq!(instance.kerf.base(), 3);
         assert_eq!(
             instance
                 .stock
@@ -2935,7 +2995,7 @@ mod tests {
 
         assert!(instance.stock.is_empty());
         assert!(instance.cuts.is_empty());
-        assert_eq!(instance.kerf_width, 3);
+        assert_eq!(instance.kerf.base(), 3);
     }
 
     #[test]
@@ -4000,7 +4060,7 @@ mod tests {
         let after = crossover_population(
             population,
             CrossoverConfig { enabled: false },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4016,7 +4076,7 @@ mod tests {
         let crossed = crossover_population(
             vec![left, right],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4056,7 +4116,7 @@ mod tests {
         let crossed = crossover_population(
             vec![first, second, third],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4096,7 +4156,7 @@ mod tests {
         let crossed = crossover_population(
             population,
             CrossoverConfig { enabled: true },
-            stock_source_instance.kerf_width,
+            stock_source_instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4113,14 +4173,14 @@ mod tests {
         );
 
         let mut small_bin =
-            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut small_bin,
             &instance.cuts[1],
             BaselineGuillotineBackend::default_heuristic()
         ));
         let mut full_bin =
-            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut full_bin,
             &instance.cuts[0],
@@ -4135,7 +4195,7 @@ mod tests {
         let crossed = crossover_population(
             vec![stock_source, donor],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4165,7 +4225,7 @@ mod tests {
         let crossed_empty = crossover_population::<BaselineGuillotineBackend>(
             Vec::new(),
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         assert!(crossed_empty.is_empty());
@@ -4175,7 +4235,7 @@ mod tests {
         let crossed_single = crossover_population(
             vec![single],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4191,14 +4251,14 @@ mod tests {
         let crossed = crossover_population(
             vec![left, right],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
         let repaired = repair_population(
             crossed,
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let child = &repaired[2];
@@ -4213,14 +4273,14 @@ mod tests {
     fn crossover_repair_survival_can_select_repaired_child() {
         let instance = crossover_project_instance();
         let mut first_parent_full_stock =
-            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut first_parent_full_stock,
             &instance.cuts[0],
             BaselineGuillotineBackend::default_heuristic()
         ));
         let mut first_parent_partial_stock =
-            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[1].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut first_parent_partial_stock,
             &instance.cuts[1],
@@ -4234,7 +4294,7 @@ mod tests {
         first_parent.unused_cuts.push(instance.cuts[1].clone());
 
         let mut second_parent_full_stock =
-            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf_width);
+            BaselineGuillotineBackend::new_bin(instance.stock[0].clone(), instance.kerf);
         assert!(BaselineGuillotineBackend::insert(
             &mut second_parent_full_stock,
             &instance.cuts[0],
@@ -4250,7 +4310,7 @@ mod tests {
         let crossed = crossover_population(
             vec![first_parent, second_parent],
             CrossoverConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         assert_eq!(crossed.len(), 3);
@@ -4258,7 +4318,7 @@ mod tests {
         let repaired = repair_population(
             crossed,
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let survivors = run_population_epochs(
@@ -4313,7 +4373,7 @@ mod tests {
         let repaired = repair_population(
             compacted,
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let compacted_candidate = &repaired[0];
@@ -4356,7 +4416,7 @@ mod tests {
         let staged = run_population_generations(
             vec![compactable_two_sheet_candidate(&instance)],
             &staged_config,
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4395,7 +4455,7 @@ mod tests {
         let after = repair_population(
             population,
             RepairConfig { enabled: false },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4418,7 +4478,7 @@ mod tests {
         let repaired = repair_population(
             vec![candidate],
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4450,13 +4510,13 @@ mod tests {
         let repaired_once = repair_population(
             vec![candidate],
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let repaired_twice = repair_population(
             repaired_once,
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4491,7 +4551,7 @@ mod tests {
         let repaired = repair_population(
             vec![candidate],
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4519,7 +4579,7 @@ mod tests {
         let repaired = repair_population(
             vec![candidate],
             RepairConfig { enabled: true },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
 
@@ -4567,7 +4627,7 @@ mod tests {
                 invalid_candidate,
             ],
             RepairConfig { enabled: true },
-            repairable_instance.kerf_width,
+            repairable_instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let survivors = run_population_epochs(
@@ -4980,13 +5040,13 @@ mod tests {
         let manual_population = crossover_population(
             manual_population,
             CrossoverConfig { enabled: false },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let manual_population = repair_population(
             manual_population,
             RepairConfig { enabled: false },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let manual_population =
@@ -4994,7 +5054,7 @@ mod tests {
         let manual_population = repair_population(
             manual_population,
             RepairConfig { enabled: false },
-            instance.kerf_width,
+            instance.kerf,
             BaselineGuillotineBackend::default_heuristic(),
         );
         let manual_population = run_population_epochs(
@@ -5458,7 +5518,7 @@ mod tests {
                 length: 1220,
                 pattern: PatternDirection::None,
             },
-            1,
+            KerfModel::constant(1),
         );
         sheet.free_rects.clear();
 
@@ -5814,7 +5874,7 @@ mod tests {
                     width: 100,
                     length: 59,
                 },
-                1,
+                KerfModel::constant(1),
             ),
             Some(Rect {
                 x: 0,
@@ -5837,7 +5897,7 @@ mod tests {
                     width: 59,
                     length: 100,
                 },
-                1,
+                KerfModel::constant(1),
             ),
             Some(Rect {
                 x: 0,
@@ -5896,7 +5956,7 @@ mod tests {
             vec![cut_with_size(10, 60, 100, 2)],
         );
         let instance = expand_project(&project).expect("project should expand");
-        let kerf_width = instance.kerf_width;
+        let kerf_width = instance.kerf;
         let cut_catalog = CutCatalog::new(instance.cuts.clone());
         let mut candidate = Candidate::<BaselineGuillotineBackend>::new(
             StockInventory::new(instance.stock),
@@ -6075,7 +6135,7 @@ mod tests {
         );
         project.settings.kerf_width = 3;
         let instance = expand_project(&project).expect("project should expand");
-        let kerf_width = instance.kerf_width;
+        let kerf_width = instance.kerf;
         let heuristic = BaselineGuillotineBackend::default_heuristic();
         let mut candidate = first_fit_candidate::<BaselineGuillotineBackend>(instance);
         let removed_key = CutInstanceKey {
@@ -6129,7 +6189,7 @@ mod tests {
             vec![cut_with_size(10, 101, 100, 1)],
         );
         let instance = expand_project(&project).expect("project should expand");
-        let kerf_width = instance.kerf_width;
+        let kerf_width = instance.kerf;
         let heuristic = BaselineGuillotineBackend::default_heuristic();
         let mut candidate = first_fit_candidate::<BaselineGuillotineBackend>(instance);
         let unused_key = CutInstanceKey {
